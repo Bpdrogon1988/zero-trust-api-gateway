@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environments
+.env/
+.venv/
+env/
+venv/
+
+# Environment variables and secrets
+*.env
+.env.*
+
+# macOS & Linux system files
+.DS_Store
+Thumbs.db
+
+# VS Code settings
+.vscode/
+
+# Docker artifacts
+*.log
+*.pid
+docker-compose.override.yml
+
+# Redis data (if you persist volume locally)
+redis-data/
+
+# Unit test cache
+.pytest_cache/
+.cache/
+
+# MyPy & Coverage
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Ignore local SQLite or DB files (if any)
+*.db
+*.sqlite3
+*.sqlite
+
+# JWT Tokens or generated credentials (if any)
+token.txt
+*.jwt
