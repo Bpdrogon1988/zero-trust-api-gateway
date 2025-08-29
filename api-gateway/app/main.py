@@ -4,7 +4,7 @@ import hmac
 import hashlib
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -15,6 +15,13 @@ from redis import Redis
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
 from cryptography.hazmat.backends import default_backend
+import base64
+
+try:
+    import boto3  # type: ignore
+    from botocore.config import Config as BotoConfig  # type: ignore
+except Exception:
+    boto3 = None  # type: ignore
 
 
 def get_env(name: str, default: Optional[str] = None) -> str:
@@ -75,6 +82,67 @@ def _b64url(raw: bytes) -> str:
 
 
 _keys_cache: Dict[str, Any] = {"loaded_at": 0, "active_kid": None, "keys": {}}  # type: ignore
+
+# Cache for KMS public keys: {kid: {"loaded_at": ts, "jwk": {...}}}
+_kms_pub_cache: Dict[str, Any] = {}
+
+
+def _get_kms_client():
+    if boto3 is None:
+        raise RuntimeError("boto3 is not installed for KMS support")
+    region = os.getenv("AWS_REGION") or os.getenv("JWT_KMS_REGION") or "us-east-1"
+    timeout = int(os.getenv("KMS_TIMEOUT_SECONDS", "5"))
+    return boto3.client(
+        "kms",
+        region_name=region,
+        config=BotoConfig(read_timeout=timeout, connect_timeout=timeout, retries={"max_attempts": 3, "mode": "standard"}),
+    )
+
+
+def _kms_get_public_jwk(kms_key_id: str) -> Dict[str, Any]:
+    now = time.time()
+    cached = _kms_pub_cache.get(kms_key_id)
+    ttl = int(os.getenv("KMS_PUBLIC_CACHE_SECONDS", "300"))
+    if cached and (now - cached.get("loaded_at", 0)) < ttl:
+        return cached["jwk"]
+    client = _get_kms_client()
+    resp = client.get_public_key(KeyId=kms_key_id)
+    key_type = resp.get("KeySpec")
+    pub_der = resp["PublicKey"]
+    public_key = serialization.load_der_public_key(pub_der, backend=default_backend())
+    if not isinstance(public_key, rsa.RSAPublicKey):
+        raise RuntimeError("KMS key is not RSA public key")
+    numbers = public_key.public_numbers()
+    n = numbers.n.to_bytes((numbers.n.bit_length() + 7) // 8, byteorder="big")
+    e = numbers.e.to_bytes((numbers.e.bit_length() + 7) // 8, byteorder="big")
+    kid = resp.get("KeyId", kms_key_id)
+    jwk = {
+        "kty": "RSA",
+        "kid": kid,
+        "alg": "RS256",
+        "use": "sig",
+        "n": _b64url(n),
+        "e": _b64url(e),
+    }
+    _kms_pub_cache[kms_key_id] = {"loaded_at": now, "jwk": jwk}
+    return jwk
+
+
+def _kms_sign_jwt(payload: Dict[str, Any], active_kms_key_id: str) -> str:
+    header = {"alg": "RS256", "typ": "JWT", "kid": active_kms_key_id}
+    header_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    payload_b64 = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    client = _get_kms_client()
+    resp = client.sign(
+        KeyId=active_kms_key_id,
+        Message=signing_input,
+        MessageType="RAW",
+        SigningAlgorithm="RSASSA_PKCS1_V1_5_SHA_256",
+    )
+    signature = resp["Signature"]
+    signature_b64 = _b64url(signature)
+    return f"{header_b64}.{payload_b64}.{signature_b64}"
 
 
 def _load_keys_from_dir(keys_dir: str) -> Tuple[str, Dict[str, Dict[str, Any]]]:
@@ -231,19 +299,23 @@ def login(address: str, signature: str) -> dict:
         "jti": Web3.keccak(text=f"{address}:{now}").hex(),
     }
     try:
-        active_kid, keys = _get_keys()
-        key_info = keys[active_kid]
-        private_key = key_info["private"]
-        alg = key_info["alg"]
-        if isinstance(private_key, rsa.RSAPrivateKey) or isinstance(private_key, ec.EllipticCurvePrivateKey):
-            private_pem = private_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption(),
-            )
+        kms_key_id = os.getenv("JWT_KMS_KEY_ID")
+        if kms_key_id:
+            token = _kms_sign_jwt(payload, kms_key_id)
         else:
-            raise RuntimeError("Unsupported private key type")
-        token = jwt.encode(payload, private_pem, algorithm=alg, headers={"kid": active_kid})
+            active_kid, keys = _get_keys()
+            key_info = keys[active_kid]
+            private_key = key_info["private"]
+            alg = key_info["alg"]
+            if isinstance(private_key, rsa.RSAPrivateKey) or isinstance(private_key, ec.EllipticCurvePrivateKey):
+                private_pem = private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+            else:
+                raise RuntimeError("Unsupported private key type")
+            token = jwt.encode(payload, private_pem, algorithm=alg, headers={"kid": active_kid})
     except Exception:
         # Fallback to HS256 only if explicitly allowed (development)
         if os.getenv("ALLOW_HS256_FALLBACK", "false").lower() == "true":
@@ -354,8 +426,22 @@ async def proxy(endpoint: str, request: Request, authorization: Optional[str] = 
 @app.get("/.well-known/jwks.json")
 def jwks() -> dict:
     try:
+        kms_key_id = os.getenv("JWT_KMS_KEY_ID")
+        jwks_list: List[Dict[str, Any]] = []
+        if kms_key_id:
+            jwks_list.append(_kms_get_public_jwk(kms_key_id))
+        # Also include local keys to allow dual-publish during migrations
         _, keys = _get_keys()
-        return {"keys": [info["public_jwk"] for info in keys.values()]}
+        jwks_list.extend([info["public_jwk"] for info in keys.values()])
+        # De-duplicate by kid
+        seen: set = set()
+        unique = []
+        for k in jwks_list:
+            if k["kid"] in seen:
+                continue
+            seen.add(k["kid"])
+            unique.append(k)
+        return {"keys": unique}
     except Exception:
         raise HTTPException(status_code=500, detail="JWKS not available")
 
