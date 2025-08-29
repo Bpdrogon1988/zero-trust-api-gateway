@@ -37,6 +37,25 @@ export SHARED_BACKEND_KEY='replace-with-strong-key'
 export ALLOWLIST_ADDRESSES=
 ```
 
+Optional: Use AWS Secrets Manager or KMS instead of plain env vars. Set one of the following for each secret. Region can be provided via `AWS_REGION` or `AWS_DEFAULT_REGION` and credentials via the usual AWS mechanisms (env vars, instance profile, or mounted config):
+
+```bash
+# For JWT secret (api-gateway):
+export JWT_SECRET               # direct value (highest precedence)
+export JWT_SECRET_NAME          # name/arn of secret in AWS Secrets Manager
+export JWT_SECRET_NAME_FIELD    # optional JSON field if the secret is a JSON object
+export JWT_SECRET_KMS_B64       # base64-encoded KMS ciphertext to decrypt
+
+# For HMAC key (api-gateway and backend):
+export SHARED_BACKEND_KEY
+export SHARED_BACKEND_KEY_NAME
+export SHARED_BACKEND_KEY_NAME_FIELD
+export SHARED_BACKEND_KEY_KMS_B64
+
+# Region (if not provided by environment/metadata):
+export AWS_REGION=us-east-1
+```
+
 Bring up services:
 
 ```bash

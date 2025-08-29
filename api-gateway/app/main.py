@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 import jwt
 from web3 import Web3
 from redis import Redis
+from .aws_secrets import resolve_secret
 
 
 def get_env(name: str, default: Optional[str] = None) -> str:
@@ -22,10 +23,12 @@ def get_env(name: str, default: Optional[str] = None) -> str:
 
 
 def get_jwt_secret() -> str:
-    secret: Optional[str] = os.getenv("JWT_SECRET")
-    if not secret:
-        raise RuntimeError("JWT_SECRET is not set")
-    return secret
+    return resolve_secret(
+        direct_env_var_name="JWT_SECRET",
+        secret_name_env_var_name="JWT_SECRET_NAME",
+        kms_cipher_env_var_name="JWT_SECRET_KMS_B64",
+        required=True,
+    )
 
 
 def get_redis() -> Redis:
@@ -190,9 +193,12 @@ async def proxy(endpoint: str, request: Request, authorization: Optional[str] = 
     url = f"{backend_url}/{endpoint.lstrip('/')}"
 
     # HMAC sign request to backend
-    key = os.getenv("SHARED_BACKEND_KEY")
-    if not key:
-        raise HTTPException(status_code=500, detail="Backend signing key not configured")
+    key = resolve_secret(
+        direct_env_var_name="SHARED_BACKEND_KEY",
+        secret_name_env_var_name="SHARED_BACKEND_KEY_NAME",
+        kms_cipher_env_var_name="SHARED_BACKEND_KEY_KMS_B64",
+        required=True,
+    )
     ts = str(int(time.time()))
     canonical = f"GET:{endpoint.lstrip('/')}:{ts}:{subject}"
     sig = hmac.new(key.encode(), canonical.encode(), hashlib.sha256).hexdigest()
