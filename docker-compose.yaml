@@ -10,10 +10,21 @@ services:
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - REDIS_URL=redis://redis:6379/0
+      - BACKEND_URL=http://backend:9000
+      - WEB3_PROVIDER_URL=http://ganache:8545
+      - ALLOWLIST_ADDRESSES=${ALLOWLIST_ADDRESSES}
+      - ALLOWLIST_CONTRACT_PATH=/contracts/Allowlist.json
+      - SHARED_BACKEND_KEY=${SHARED_BACKEND_KEY}
     depends_on:
       redis:
         condition: service_healthy
+      backend:
+        condition: service_started
+      ganache:
+        condition: service_started
     restart: unless-stopped
+    volumes:
+      - contracts:/contracts:ro
 
   redis:
     image: redis:7-alpine
@@ -26,6 +37,41 @@ services:
       retries: 20
     restart: unless-stopped
 
+  backend:
+    build:
+      context: ./backend
+    container_name: backend
+    expose:
+      - "9000"
+    restart: unless-stopped
+    environment:
+      - SHARED_BACKEND_KEY=${SHARED_BACKEND_KEY}
+
+  ganache:
+    image: trufflesuite/ganache:v7.9.2
+    container_name: ganache
+    command: ["--wallet.totalAccounts=10", "--wallet.defaultBalance=1000", "--host=0.0.0.0"]
+    ports:
+      - "8545:8545"
+    restart: unless-stopped
+
+  deployer:
+    build:
+      context: ./deployer
+    container_name: deployer
+    environment:
+      - WEB3_PROVIDER_URL=http://ganache:8545
+      - INITIAL_ALLOWLIST=${ALLOWLIST_ADDRESSES}
+    depends_on:
+      ganache:
+        condition: service_started
+    volumes:
+      - contracts:/contracts
+    restart: on-failure
+
 networks:
   default:
     name: zero-trust-net
+
+volumes:
+  contracts:
