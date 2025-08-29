@@ -3,6 +3,7 @@ import hmac
 import hashlib
 import time
 from fastapi import FastAPI, Header, HTTPException, Request
+from .aws_secrets import resolve_secret
 
 app = FastAPI(title="Backend Service", version="0.1.0")
 
@@ -13,7 +14,12 @@ def health() -> dict:
 
 
 def verify_signature(method: str, endpoint: str, ts: str, subject: str, signature: str) -> bool:
-    key = os.getenv("SHARED_BACKEND_KEY")
+    key = resolve_secret(
+        direct_env_var_name="SHARED_BACKEND_KEY",
+        secret_name_env_var_name="SHARED_BACKEND_KEY_NAME",
+        kms_cipher_env_var_name="SHARED_BACKEND_KEY_KMS_B64",
+        required=True,
+    )
     if not key:
         return False
     try:
