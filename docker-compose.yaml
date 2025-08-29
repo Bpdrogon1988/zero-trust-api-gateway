@@ -1,39 +1,31 @@
+version: "3.9"
 
----
+services:
+  api-gateway:
+    build:
+      context: ./api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
-## 🚀 Features
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
 
-- ✅ Secure token issuance and validation (`HS256`)
-- 🚫 Token revocation via Redis (for logout/blacklist logic)
-- 🐳 Built with Docker and Docker Compose
-- 🔧 Auto reload with Uvicorn (development mode)
-- 🌍 Proxy endpoint for secure pass-through
-
----
-
-## 📦 Tech Stack
-
-- **FastAPI** – Web framework
-- **PyJWT** – JSON Web Token (JWT) handling
-- **Redis** – Token blacklist and revocation
-- **Uvicorn** – ASGI web server
-- **Docker** – Containerization
-- **curl / HTTPie** – Testing endpoints
-
----
-
-## ⚙️ Setup & Run
-
-### 🔧 Requirements
-
-- Docker & Docker Compose installed
-- Python 3.8+ (if running locally without Docker)
-
----
-
-### 🐳 Docker (Recommended)
-
-```bash
-git clone https://github.com/bpdrogon88/zero-trust-api-gateway.git
-cd zero-trust-api-gateway
-docker compose up --build
+networks:
+  default:
+    name: zero-trust-net

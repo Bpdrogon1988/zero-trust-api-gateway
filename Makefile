@@ -1,7 +1,7 @@
 PROJECT_NAME=zero-trust-api-gateway
-GATEWAY_URL=http://localhost:8080
-TOKEN=your_token_here
-TEST_ENDPOINT=get
+GATEWAY_URL?=http://localhost:8080
+TOKEN?=
+TEST_ENDPOINT?=health
 
 up:
 	docker compose up --build
@@ -22,7 +22,18 @@ restart:
 	docker compose down && docker compose up --build
 
 test:
-	curl -H "Authorization: Bearer $(TOKEN)" $(GATEWAY_URL)/proxy/$(TEST_ENDPOINT)
+	@if [ -z "$(TOKEN)" ]; then \
+		if [ -z "$$JWT_SECRET" ]; then \
+			echo "ERROR: Set TOKEN or JWT_SECRET to run tests safely."; exit 1; \
+		fi; \
+		TOKEN=$$(python3 - <<'PY'
+import os, jwt
+secret = os.environ.get('JWT_SECRET')
+print(jwt.encode({"user":"smoke"}, secret, algorithm="HS256"))
+PY
+		); \
+	fi; \
+	curl -sS -H "Authorization: Bearer $$TOKEN" $(GATEWAY_URL)/proxy/$(TEST_ENDPOINT)
 
 flood:
 	for i in {1..150}; do \
@@ -30,7 +41,14 @@ flood:
 	done
 
 token:
-	python3 -c 'import jwt; print(jwt.encode({"user": "branden"}, "your_very_secret_key", algorithm="HS256"))'
+	@if [ -z "$$JWT_SECRET" ]; then \
+		echo "ERROR: Please export JWT_SECRET to generate a token."; exit 1; \
+	fi; \
+	python3 - <<'PY'
+import os, jwt
+secret = os.environ['JWT_SECRET']
+print(jwt.encode({"user":"dev"}, secret, algorithm="HS256"))
+PY
 
 clean:
 	docker compose down -v --rmi all --remove-orphans
